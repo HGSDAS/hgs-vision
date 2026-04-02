@@ -4,7 +4,6 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import multer from "multer";
 import fs from "fs";
-import crypto from "crypto";
 
 dotenv.config();
 
@@ -29,6 +28,10 @@ HELPERS (BOTPRESS CHAT API)
 async function createUser() {
   const res = await fetch(`${BASE_URL}/users`, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
   });
   const data = await res.json();
   console.log("createUser:", data);
@@ -49,8 +52,10 @@ async function createConversation(userKey) {
   const res = await fetch(`${BASE_URL}/conversations`, {
     method: "POST",
     headers: {
+      "Content-Type": "application/json",
       "x-user-key": userKey,
     },
+    body: JSON.stringify({}),
   });
   const data = await res.json();
   console.log("createConversation:", data);
