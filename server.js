@@ -40,6 +40,7 @@ PRODUCT IDENTIFICATION (VISION)
 ----------------------------------------
 */
 app.post("/identify", upload.single("image"), async (req, res) => {
+
   try {
     const conversationId =
       req.body?.conversationId || crypto.randomUUID();
@@ -119,10 +120,11 @@ app.post("/identify", upload.single("image"), async (req, res) => {
     ----------------------------------------
     */
     res.json({
-      conversationId,
-      product: productName,
-      status: "processing",
-    });
+  conversationId,
+  product: productName,
+  botpress: botpressData,
+  status: "complete",
+});
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Vision processing failed" });
