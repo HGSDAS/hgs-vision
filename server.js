@@ -32,7 +32,17 @@ async function createUser() {
   });
   const data = await res.json();
   console.log("createUser:", data);
-  return data.key;
+  if (!res.ok) {
+    throw new Error(
+      `createUser failed: ${res.status} ${JSON.stringify(data)}`
+    );
+  }
+  const userKey = data.key;
+  const userId = data.user?.id;
+  if (!userKey || !userId) {
+    throw new Error(`createUser: missing key or user id: ${JSON.stringify(data)}`);
+  }
+  return { userKey, userId };
 }
 
 async function createConversation(userKey) {
@@ -44,7 +54,18 @@ async function createConversation(userKey) {
   });
   const data = await res.json();
   console.log("createConversation:", data);
-  return data.id;
+  if (!res.ok) {
+    throw new Error(
+      `createConversation failed: ${res.status} ${JSON.stringify(data)}`
+    );
+  }
+  const id = data.conversation?.id ?? data.id;
+  if (!id) {
+    throw new Error(
+      `createConversation: missing conversation id: ${JSON.stringify(data)}`
+    );
+  }
+  return id;
 }
 
 async function sendMessage(userKey, conversationId, text) {
@@ -64,7 +85,24 @@ async function sendMessage(userKey, conversationId, text) {
   });
 
   const data = await res.json().catch(() => ({}));
-  console.log("sendMessage:", data);
+  console.log("sendMessage:", res.status, data);
+  if (!res.ok) {
+    throw new Error(
+      `sendMessage failed: ${res.status} ${JSON.stringify(data)}`
+    );
+  }
+}
+
+/** Botpress list messages uses userId (not direction) to distinguish speakers. */
+function textFromMessagePayload(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  if (payload.type === "text" && typeof payload.text === "string") {
+    return payload.text;
+  }
+  if (payload.type === "markdown" && typeof payload.markdown === "string") {
+    return payload.markdown;
+  }
+  return "";
 }
 
 async function getMessages(userKey, conversationId) {
@@ -144,7 +182,7 @@ app.post("/identify", upload.single("image"), async (req, res) => {
     ----------------------------------------
     */
 
-    const userKey = await createUser();
+    const { userKey, userId: endUserId } = await createUser();
     const conversationId = await createConversation(userKey);
 
     await sendMessage(userKey, conversationId, productName);
@@ -157,20 +195,22 @@ app.post("/identify", upload.single("image"), async (req, res) => {
 
     let botMessage = "No response";
 
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 1000));
 
       const messages = await getMessages(userKey, conversationId);
 
       if (Array.isArray(messages)) {
-        const outgoing = messages.filter(
-          (m) => m.direction === "outgoing"
-        );
+        const fromBot = messages
+          .filter((m) => m.userId !== endUserId)
+          .sort(
+            (a, b) =>
+              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
 
-        if (outgoing.length > 0) {
-          botMessage =
-            outgoing[outgoing.length - 1]?.payload?.text ||
-            "No response";
+        if (fromBot.length > 0) {
+          const last = fromBot[fromBot.length - 1];
+          botMessage = textFromMessagePayload(last.payload) || "No response";
 
           console.log("Bot response found:", botMessage);
           break;
