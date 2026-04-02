@@ -22,14 +22,7 @@ const BASE_URL = `https://chat.botpress.cloud/${process.env.BOTPRESS_WEBHOOK_ID}
 
 /*
 ----------------------------------------
-SESSION STORAGE
-----------------------------------------
-*/
-const sessions = {};
-
-/*
-----------------------------------------
-HELPERS
+HELPERS (BOTPRESS CHAT API)
 ----------------------------------------
 */
 
@@ -38,7 +31,8 @@ async function createUser() {
     method: "POST",
   });
   const data = await res.json();
-  return data.key; // x-user-key
+  console.log("createUser:", data);
+  return data.key;
 }
 
 async function createConversation(userKey) {
@@ -49,11 +43,12 @@ async function createConversation(userKey) {
     },
   });
   const data = await res.json();
+  console.log("createConversation:", data);
   return data.id;
 }
 
 async function sendMessage(userKey, conversationId, text) {
-  await fetch(`${BASE_URL}/messages`, {
+  const res = await fetch(`${BASE_URL}/messages`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -67,6 +62,9 @@ async function sendMessage(userKey, conversationId, text) {
       },
     }),
   });
+
+  const data = await res.json().catch(() => ({}));
+  console.log("sendMessage:", data);
 }
 
 async function getMessages(userKey, conversationId) {
@@ -78,9 +76,16 @@ async function getMessages(userKey, conversationId) {
       },
     }
   );
-  const data = await res.json();
-  console.log("Botpress messages raw:", JSON.stringify(data, null, 2));
-  return data.messages || data;
+
+  const data = await res.json().catch(() => ({}));
+  console.log("getMessages RAW:", JSON.stringify(data, null, 2));
+
+  // Handle multiple possible shapes
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.messages)) return data.messages;
+  if (Array.isArray(data.items)) return data.items;
+
+  return [];
 }
 
 /*
@@ -89,7 +94,7 @@ HEALTH CHECK
 ----------------------------------------
 */
 app.get("/", (req, res) => {
-  res.send("HGS Vision API running (Chat API proper)");
+  res.send("HGS Vision API running (stable)");
 });
 
 /*
@@ -99,11 +104,9 @@ MAIN ENDPOINT
 */
 app.post("/identify", upload.single("image"), async (req, res) => {
   try {
-    const sessionId = crypto.randomUUID();
-
     /*
     ----------------------------------------
-    IMAGE → PRODUCT NAME (OPENAI)
+    STEP 1: IMAGE → PRODUCT NAME
     ----------------------------------------
     */
     const imagePath = req.file.path;
@@ -129,60 +132,64 @@ app.post("/identify", upload.single("image"), async (req, res) => {
       ],
     });
 
-    const productName = aiRes.output_text;
+    const productName = aiRes.output_text?.trim() || "Unknown product";
 
     fs.unlinkSync(imagePath);
 
+    console.log("Detected product:", productName);
+
     /*
     ----------------------------------------
-    BOTPRESS FLOW
+    STEP 2: BOTPRESS FLOW
     ----------------------------------------
     */
 
-    // 1. Create user
     const userKey = await createUser();
-
-    // 2. Create conversation
     const conversationId = await createConversation(userKey);
 
-    // 3. Send product name
     await sendMessage(userKey, conversationId, productName);
-
-    // 4. Wait briefly for bot to respond
-    await new Promise((r) => setTimeout(r, 1500));
-
-    // 5. Get messages
-    const messages = await getMessages(userKey, conversationId);
-
-    // Extract last bot message
-    let botMessage = "No response";
-
-if (Array.isArray(messages)) {
-  const outgoing = messages.filter(
-    (m) => m.direction === "outgoing"
-  );
-
-  if (outgoing.length > 0) {
-    botMessage =
-      outgoing[outgoing.length - 1]?.payload?.text || "No response";
-  }
-} else {
-  console.log("Unexpected messages format:", messages);
-}
 
     /*
     ----------------------------------------
-    RESPONSE
+    STEP 3: POLL FOR RESPONSE
+    ----------------------------------------
+    */
+
+    let botMessage = "No response";
+
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+
+      const messages = await getMessages(userKey, conversationId);
+
+      if (Array.isArray(messages)) {
+        const outgoing = messages.filter(
+          (m) => m.direction === "outgoing"
+        );
+
+        if (outgoing.length > 0) {
+          botMessage =
+            outgoing[outgoing.length - 1]?.payload?.text ||
+            "No response";
+
+          console.log("Bot response found:", botMessage);
+          break;
+        }
+      }
+    }
+
+    /*
+    ----------------------------------------
+    FINAL RESPONSE
     ----------------------------------------
     */
     res.json({
       product: productName,
       botpress: botMessage,
-      conversationId,
       status: "complete",
     });
   } catch (err) {
-    console.error(err);
+    console.error("ERROR:", err);
     res.status(500).json({ error: "Vision processing failed" });
   }
 });
