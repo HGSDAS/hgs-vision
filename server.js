@@ -79,7 +79,8 @@ async function getMessages(userKey, conversationId) {
     }
   );
   const data = await res.json();
-  return data.messages;
+  console.log("Botpress messages raw:", JSON.stringify(data, null, 2));
+  return data.messages || data;
 }
 
 /*
@@ -154,10 +155,20 @@ app.post("/identify", upload.single("image"), async (req, res) => {
     const messages = await getMessages(userKey, conversationId);
 
     // Extract last bot message
-    const botMessage =
-      messages
-        .filter((m) => m.direction === "outgoing")
-        .pop()?.payload?.text || "No response";
+    let botMessage = "No response";
+
+if (Array.isArray(messages)) {
+  const outgoing = messages.filter(
+    (m) => m.direction === "outgoing"
+  );
+
+  if (outgoing.length > 0) {
+    botMessage =
+      outgoing[outgoing.length - 1]?.payload?.text || "No response";
+  }
+} else {
+  console.log("Unexpected messages format:", messages);
+}
 
     /*
     ----------------------------------------
