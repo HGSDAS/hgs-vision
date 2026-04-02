@@ -21,6 +21,14 @@ app.get("/", (req, res) => {
   res.send("HGS Vision API running");
 });
 
+//botpress response
+app.post("/botpress-response", express.json(), (req, res) => {
+  console.log("Botpress response received:", req.body);
+
+  // This is where you will eventually forward to app or store result
+  res.sendStatus(200);
+});
+
 // Product identification endpoint
 app.post("/identify", upload.single("image"), async (req, res) => {
   try {
