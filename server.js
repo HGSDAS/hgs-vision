@@ -132,18 +132,25 @@ app.post("/identify", upload.single("image"), async (req, res) => {
     ----------------------------------------
     */
     const botpressResponse = await fetch(
-      "https://webhook.botpress.cloud/acdfafc0-d162-44cd-a730-86dc6ce12b47",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          scanId,
-          product: productName,
-        }),
+  "https://webhook.botpress.cloud/acdfafc0-d162-44cd-a730-86dc6ce12b47",
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `bearer ${process.env.BOTPRESS_TOKEN}`
+    },
+    body: JSON.stringify({
+      userId: scanId,                 // or real user id from app
+      messageId: crypto.randomUUID(),
+      conversationId: scanId,
+      type: "text",
+      text: productName,
+      payload: {
+        product: productName
       }
-    );
+    })
+  }
+);
 
     const botpressData = await botpressResponse.json().catch(() => ({}));
 
