@@ -18,12 +18,69 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+const BASE_URL = `https://chat.botpress.cloud/${process.env.BOTPRESS_WEBHOOK_ID}`;
+
 /*
 ----------------------------------------
-SESSION STORAGE (simple in-memory)
+SESSION STORAGE
 ----------------------------------------
 */
 const sessions = {};
+
+/*
+----------------------------------------
+HELPERS
+----------------------------------------
+*/
+
+async function createUser() {
+  const res = await fetch(`${BASE_URL}/users`, {
+    method: "POST",
+  });
+  const data = await res.json();
+  return data.key; // x-user-key
+}
+
+async function createConversation(userKey) {
+  const res = await fetch(`${BASE_URL}/conversations`, {
+    method: "POST",
+    headers: {
+      "x-user-key": userKey,
+    },
+  });
+  const data = await res.json();
+  return data.id;
+}
+
+async function sendMessage(userKey, conversationId, text) {
+  await fetch(`${BASE_URL}/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-user-key": userKey,
+    },
+    body: JSON.stringify({
+      conversationId,
+      payload: {
+        type: "text",
+        text: text,
+      },
+    }),
+  });
+}
+
+async function getMessages(userKey, conversationId) {
+  const res = await fetch(
+    `${BASE_URL}/conversations/${conversationId}/messages`,
+    {
+      headers: {
+        "x-user-key": userKey,
+      },
+    }
+  );
+  const data = await res.json();
+  return data.messages;
+}
 
 /*
 ----------------------------------------
@@ -31,25 +88,28 @@ HEALTH CHECK
 ----------------------------------------
 */
 app.get("/", (req, res) => {
-  res.send("HGS Vision API running (Chat API mode)");
+  res.send("HGS Vision API running (Chat API proper)");
 });
 
 /*
 ----------------------------------------
-PRODUCT IDENTIFICATION (VISION)
+MAIN ENDPOINT
 ----------------------------------------
 */
 app.post("/identify", upload.single("image"), async (req, res) => {
-
   try {
-    const conversationId =
-      req.body?.conversationId || crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
 
+    /*
+    ----------------------------------------
+    IMAGE → PRODUCT NAME (OPENAI)
+    ----------------------------------------
+    */
     const imagePath = req.file.path;
     const imageBuffer = fs.readFileSync(imagePath);
     const base64Image = imageBuffer.toString("base64");
 
-    const response = await openai.responses.create({
+    const aiRes = await openai.responses.create({
       model: "gpt-4.1-mini",
       input: [
         {
@@ -68,82 +128,52 @@ app.post("/identify", upload.single("image"), async (req, res) => {
       ],
     });
 
-    const productName = response.output_text;
+    const productName = aiRes.output_text;
 
     fs.unlinkSync(imagePath);
 
     /*
     ----------------------------------------
-    STORE SESSION
+    BOTPRESS FLOW
     ----------------------------------------
     */
-    sessions[conversationId] = {
-      product: productName,
-      status: "sent_to_botpress",
-      createdAt: Date.now(),
-    };
+
+    // 1. Create user
+    const userKey = await createUser();
+
+    // 2. Create conversation
+    const conversationId = await createConversation(userKey);
+
+    // 3. Send product name
+    await sendMessage(userKey, conversationId, productName);
+
+    // 4. Wait briefly for bot to respond
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // 5. Get messages
+    const messages = await getMessages(userKey, conversationId);
+
+    // Extract last bot message
+    const botMessage =
+      messages
+        .filter((m) => m.direction === "outgoing")
+        .pop()?.payload?.text || "No response";
 
     /*
     ----------------------------------------
-    SEND TO BOTPRESS CHAT API
-    ----------------------------------------
-    */
-    const botpressResponse = await fetch(
-      "https://webhook.botpress.cloud/d545cfd3-c850-4a89-8dc4-3ab4b4fc85f8",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          conversationId,
-          payload: {
-            product: productName,
-          },
-        }),
-      }
-    );
-
-    const botpressData = await botpressResponse.json().catch(() => ({}));
-
-    /*
-    ----------------------------------------
-    UPDATE SESSION
-    ----------------------------------------
-    */
-    sessions[conversationId].status = "processing";
-    sessions[conversationId].botpressAck = botpressData;
-
-    /*
-    ----------------------------------------
-    RETURN IMMEDIATELY
+    RESPONSE
     ----------------------------------------
     */
     res.json({
-  conversationId,
-  product: productName,
-  botpress: botpressData,
-  status: "complete",
-});
+      product: productName,
+      botpress: botMessage,
+      conversationId,
+      status: "complete",
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Vision processing failed" });
   }
-});
-
-/*
-----------------------------------------
-RESULT CHECK (optional polling)
-----------------------------------------
-*/
-app.get("/session/:conversationId", (req, res) => {
-  const session = sessions[req.params.conversationId];
-
-  if (!session) {
-    return res.json({ status: "not_found" });
-  }
-
-  res.json(session);
 });
 
 /*
