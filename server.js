@@ -19,6 +19,12 @@ const openai = new OpenAI({
 
 const BASE_URL = `https://chat.botpress.cloud/${process.env.BOTPRESS_WEBHOOK_ID}`;
 
+const BOTPRESS_REPLY_WAIT_MS = Number(process.env.BOTPRESS_REPLY_WAIT_MS) || 15000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /*
 ----------------------------------------
 HELPERS (BOTPRESS CHAT API)
@@ -34,7 +40,6 @@ async function createUser() {
     body: JSON.stringify({}),
   });
   const data = await res.json();
-  console.log("createUser:", data);
   if (!res.ok) {
     throw new Error(
       `createUser failed: ${res.status} ${JSON.stringify(data)}`
@@ -58,7 +63,6 @@ async function createConversation(userKey) {
     body: JSON.stringify({}),
   });
   const data = await res.json();
-  console.log("createConversation:", data);
   if (!res.ok) {
     throw new Error(
       `createConversation failed: ${res.status} ${JSON.stringify(data)}`
@@ -90,7 +94,6 @@ async function sendMessage(userKey, conversationId, text) {
   });
 
   const data = await res.json().catch(() => ({}));
-  console.log("sendMessage:", res.status, data);
   if (!res.ok) {
     throw new Error(
       `sendMessage failed: ${res.status} ${JSON.stringify(data)}`
@@ -110,6 +113,22 @@ function textFromMessagePayload(payload) {
   return "";
 }
 
+/** Latest bot text/markdown message (ignores image/card-only replies that come after the text). */
+function latestBotTextReply(messages, endUserId) {
+  const withText = messages
+    .filter((m) => m.userId !== endUserId)
+    .map((m) => ({
+      m,
+      text: textFromMessagePayload(m.payload),
+      t: new Date(m.createdAt).getTime(),
+    }))
+    .filter((x) => x.text.length > 0)
+    .sort((a, b) => a.t - b.t);
+
+  if (withText.length === 0) return "";
+  return withText[withText.length - 1].text;
+}
+
 async function getMessages(userKey, conversationId) {
   const res = await fetch(
     `${BASE_URL}/conversations/${conversationId}/messages`,
@@ -121,7 +140,6 @@ async function getMessages(userKey, conversationId) {
   );
 
   const data = await res.json().catch(() => ({}));
-  console.log("getMessages RAW:", JSON.stringify(data, null, 2));
 
   // Handle multiple possible shapes
   if (Array.isArray(data)) return data;
@@ -194,33 +212,19 @@ app.post("/identify", upload.single("image"), async (req, res) => {
 
     /*
     ----------------------------------------
-    STEP 3: POLL FOR RESPONSE
+    STEP 3: WAIT ONCE, THEN FETCH MESSAGES ONCE
     ----------------------------------------
     */
 
-    let botMessage = "No response";
+    await sleep(BOTPRESS_REPLY_WAIT_MS);
 
-    for (let i = 0; i < 15; i++) {
-      await new Promise((r) => setTimeout(r, 1000));
+    const messages = await getMessages(userKey, conversationId);
+    const botMessage = Array.isArray(messages)
+      ? latestBotTextReply(messages, endUserId) || "No response"
+      : "No response";
 
-      const messages = await getMessages(userKey, conversationId);
-
-      if (Array.isArray(messages)) {
-        const fromBot = messages
-          .filter((m) => m.userId !== endUserId)
-          .sort(
-            (a, b) =>
-              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-          );
-
-        if (fromBot.length > 0) {
-          const last = fromBot[fromBot.length - 1];
-          botMessage = textFromMessagePayload(last.payload) || "No response";
-
-          console.log("Bot response found:", botMessage);
-          break;
-        }
-      }
+    if (botMessage !== "No response") {
+      console.log("Bot reply (preview):", botMessage.slice(0, 120) + (botMessage.length > 120 ? "…" : ""));
     }
 
     /*
