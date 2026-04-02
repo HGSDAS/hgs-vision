@@ -20,10 +20,10 @@ const openai = new OpenAI({
 
 /*
 ----------------------------------------
-IN-MEMORY STORAGE (replace with Redis later)
+SESSION STORAGE (simple in-memory)
 ----------------------------------------
 */
-const pending = {};
+const sessions = {};
 
 /*
 ----------------------------------------
@@ -31,64 +31,18 @@ HEALTH CHECK
 ----------------------------------------
 */
 app.get("/", (req, res) => {
-  res.send("HGS Vision API running");
+  res.send("HGS Vision API running (Chat API mode)");
 });
 
 /*
 ----------------------------------------
-BOTPRESS CALLBACK (ASYNC RESPONSE)
-----------------------------------------
-*/
-app.post("/botpress-response", (req, res) => {
-  const body = req.body;
-
-  console.log("Botpress response received:", body);
-
-  const scanId = body?.scanId || body?.state?.scanId;
-
-  if (!scanId) {
-    console.log("Missing scanId in Botpress response");
-    return res.sendStatus(200);
-  }
-
-  pending[scanId] = {
-    status: "done",
-    result: body,
-    completedAt: Date.now(),
-  };
-
-  console.log(`Stored Botpress result for scanId: ${scanId}`);
-
-  res.sendStatus(200);
-});
-
-/*
-----------------------------------------
-APP POLLING ENDPOINT (GET RESULT)
-----------------------------------------
-*/
-app.get("/result/:scanId", (req, res) => {
-  const scanId = req.params.scanId;
-
-  const data = pending[scanId];
-
-  if (!data) {
-    return res.json({
-      status: "not_found",
-    });
-  }
-
-  return res.json(data);
-});
-
-/*
-----------------------------------------
-PRODUCT IDENTIFICATION + BOTPRESS SEND
+PRODUCT IDENTIFICATION (VISION)
 ----------------------------------------
 */
 app.post("/identify", upload.single("image"), async (req, res) => {
   try {
-    const scanId = crypto.randomUUID();
+    const conversationId =
+      req.body?.conversationId || crypto.randomUUID();
 
     const imagePath = req.file.path;
     const imageBuffer = fs.readFileSync(imagePath);
@@ -115,62 +69,79 @@ app.post("/identify", upload.single("image"), async (req, res) => {
 
     const productName = response.output_text;
 
+    fs.unlinkSync(imagePath);
+
     /*
     ----------------------------------------
-    MARK AS PENDING BEFORE SENDING
+    STORE SESSION
     ----------------------------------------
     */
-    pending[scanId] = {
-      status: "processing",
+    sessions[conversationId] = {
       product: productName,
+      status: "sent_to_botpress",
       createdAt: Date.now(),
     };
 
     /*
     ----------------------------------------
-    SEND TO BOTPRESS (WITH scanId)
+    SEND TO BOTPRESS CHAT API
     ----------------------------------------
     */
     const botpressResponse = await fetch(
-  "https://webhook.botpress.cloud/acdfafc0-d162-44cd-a730-86dc6ce12b47",
-  {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `bearer ${process.env.BOTPRESS_TOKEN}`
-    },
-    body: JSON.stringify({
-      userId: scanId,                 // or real user id from app
-      messageId: crypto.randomUUID(),
-      conversationId: scanId,
-      type: "text",
-      text: productName,
-      payload: {
-        product: productName
+      "https://webhook.botpress.cloud/d545cfd3-c850-4a89-8dc4-3ab4b4fc85f8",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          conversationId,
+          payload: {
+            product: productName,
+          },
+        }),
       }
-    })
-  }
-);
+    );
 
     const botpressData = await botpressResponse.json().catch(() => ({}));
 
-    fs.unlinkSync(imagePath);
+    /*
+    ----------------------------------------
+    UPDATE SESSION
+    ----------------------------------------
+    */
+    sessions[conversationId].status = "processing";
+    sessions[conversationId].botpressAck = botpressData;
 
     /*
     ----------------------------------------
-    RETURN IMMEDIATE RESPONSE TO APP
+    RETURN IMMEDIATELY
     ----------------------------------------
     */
     res.json({
-      scanId,
+      conversationId,
       product: productName,
-      botpress: botpressData,
       status: "processing",
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Vision processing failed" });
   }
+});
+
+/*
+----------------------------------------
+RESULT CHECK (optional polling)
+----------------------------------------
+*/
+app.get("/session/:conversationId", (req, res) => {
+  const session = sessions[req.params.conversationId];
+
+  if (!session) {
+    return res.json({ status: "not_found" });
+  }
+
+  res.json(session);
 });
 
 /*
